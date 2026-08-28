@@ -1,0 +1,38 @@
+# apko image definition — single source of truth for image contents.
+# The build scripts derive the image name from this filename ("iacvm"), so
+# to add another image just add another src/<name>.yaml.
+#
+# IaCVM: Alpine-based IaC devbox.
+#   - Incus: VM management/hypervisor (create/run the VMs).
+#   - OpenTofu: provisions VMs on top of Incus (Terraform-compatible; Alpine dropped the
+#     "terraform" package after HashiCorp's 2023 BSL license change, so this image uses the
+#     open-source fork instead — same HCL/workflow, CLI command is `tofu`).
+#   - Ansible: remotely configures the provisioned VMs (e.g. installs Kubernetes on them).
+# Reference: https://github.com/chainguard-dev/apko
+contents:
+  repositories:
+    - https://dl-cdn.alpinelinux.org/alpine/edge/main
+    - https://dl-cdn.alpinelinux.org/alpine/edge/community
+    - https://dl-cdn.alpinelinux.org/alpine/edge/testing # incus currently lives here
+  keyring:
+    - https://alpinelinux.org/keys/alpine-devel@lists.alpinelinux.org-4a6a0840.rsa.pub
+  packages:
+    - alpine-base
+    - bash
+    - ca-certificates
+    - incus
+    - opentofu
+    - ansible
+    - openssh-client # ansible manages the VMs over SSH
+    - python3 # ansible runtime dependency
+
+entrypoint:
+  command: /bin/bash -l
+
+work-dir: /root
+
+environment:
+  PATH: /usr/sbin:/sbin:/usr/bin:/bin
+
+archs:
+  - x86_64

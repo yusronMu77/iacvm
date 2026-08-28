@@ -1,0 +1,106 @@
+name: Build & Release
+
+# Builds the OCI image (apko) and WSL2 rootfs on every push/PR to validate the pipeline
+# still works, and on a `vX.Y.Z` tag additionally publishes both tars - plus a checksums
+# file - as assets on a GitHub Release. Release assets don't expire and don't count
+# against Actions storage quota, unlike the per-run artifact uploaded below; that's why
+# the tag path exists at all instead of pointing people at CI artifacts.
+#
+# Runs entirely on ubuntu-latest: build.ps1/package-wsl.ps1 only need Docker + pwsh, both
+# preinstalled on GitHub-hosted Linux runners. import-wsl.ps1/remove-wsl.ps1 are NOT run
+# here - they need `wsl --import` on a real Windows host with WSL2 enabled, which hosted
+# runners don't provide. Those stages stay local-only.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag (ignored on a tag push, which always uses the tag's own version)"
+        default: latest
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: vars
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "tag=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.event.inputs.tag || 'latest' }}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "artifact-name=iacvm-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build OCI image
+        shell: pwsh
+        run: ./scripts/build.ps1 -Config iacvm -Tag "${{ steps.vars.outputs.tag }}"
+
+      - name: Package WSL2 rootfs
+        shell: pwsh
+        run: ./scripts/package-wsl.ps1 -Config iacvm -Tag "${{ steps.vars.outputs.tag }}"
+
+      - name: Generate checksums
+        working-directory: outputs
+        run: sha256sum *.tar | tee SHA256SUMS.txt
+
+      - name: Job summary
+        shell: bash
+        run: |
+          {
+            echo "### Build output (tag: \`${{ steps.vars.outputs.tag }}\`)"
+            echo
+            echo '```'
+            cat outputs/SHA256SUMS.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Short-lived CI artifact for every push/PR - counts against Actions storage
+      # quota (unlimited on a public repo, but still expires after retention-days).
+      # For a persistent, non-expiring copy, push a `vX.Y.Z` tag instead (release job).
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.vars.outputs.artifact-name }}
+          path: |
+            outputs/*.tar
+            outputs/SHA256SUMS.txt
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download build output
+        uses: actions/download-artifact@v4
+        with:
+          name: iacvm-${{ github.sha }}
+          path: outputs
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            outputs/*.tar
+            outputs/SHA256SUMS.txt
+          generate_release_notes: true
